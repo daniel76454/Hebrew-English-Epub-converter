@@ -1,13 +1,13 @@
-# Hebrew-English-Epub-converter
+# Hebrew-English-Epub/MOBI-converter
 
-Local web app for converting `DOCX`, `TXT`, and `Markdown` manuscripts into `EPUB` files, with support for Hebrew, English, and mixed-language content.
+Local web app for converting `DOCX`, `TXT`, and `Markdown` manuscripts into `EPUB` or `MOBI` files, with support for Hebrew, English, and mixed-language content.
 
 ## Features
 
 - Runs locally with Flask at `http://localhost:5000`
-- Converts `.docx`, `.txt`, `.md`, and `.markdown` files to `.epub`
+- Converts `.docx`, `.txt`, `.md`, and `.markdown` files to `.epub` or `.mobi`
 - Detects title, author, chapters, and document language before conversion
-- Lets you edit EPUB metadata before download
+- Lets you edit metadata before download
 - Applies right-to-left layout automatically for Hebrew and other RTL languages
 - Preserves basic bold and italic formatting from DOCX files
 
@@ -15,6 +15,7 @@ Local web app for converting `DOCX`, `TXT`, and `Markdown` manuscripts into `EPU
 
 - Python 3.9+
 - `pip`
+- [Calibre](https://calibre-ebook.com) — **required only for MOBI output**
 
 ## Install
 
@@ -23,6 +24,8 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install flask ebooklib python-docx markdown2
 ```
+
+For MOBI output, install Calibre from [https://calibre-ebook.com](https://calibre-ebook.com) and make sure `ebook-convert` is available on your system. EPUB output works without Calibre.
 
 ## Run
 
@@ -38,7 +41,8 @@ Then open [http://localhost:5000](http://localhost:5000).
 2. Drag in a source file or click to browse.
 3. Review the detected title, author, chapters, and language.
 4. Optionally edit metadata such as title, author, publisher, date, tags, rights, and description.
-5. Click `Convert & Download EPUB`.
+5. Select the output format — `EPUB` or `MOBI`.
+6. Click `Convert & Download`.
 
 ## Supported Input Formats
 
@@ -79,6 +83,16 @@ If `title` is left blank, the app uses the detected document title or filename.
 - English content is exported with LTR direction and left-aligned text
 - Mixed-language content is handled with EPUB styling intended to improve bidirectional text rendering
 
+## Output Formats
+
+### EPUB
+
+No extra dependencies required. Works out of the box.
+
+### MOBI
+
+Requires [Calibre](https://calibre-ebook.com) to be installed on the machine running the server. The app uses Calibre's `ebook-convert` CLI tool under the hood — it first builds an EPUB, then converts it to MOBI. If Calibre is not found, the app will return an error with a link to download it.
+
 ## Notes
 
 - Temporary uploaded and generated files are stored under `/tmp/epub_converter`
@@ -95,6 +109,16 @@ Install the required packages again:
 ```bash
 pip install flask ebooklib python-docx markdown2
 ```
+
+### MOBI conversion fails — Calibre not found
+
+Install Calibre from [https://calibre-ebook.com](https://calibre-ebook.com). On macOS you can also use Homebrew:
+
+```bash
+brew install --cask calibre
+```
+
+After installing, restart the app. EPUB output is unaffected and does not require Calibre.
 
 ### Empty or badly split chapters
 

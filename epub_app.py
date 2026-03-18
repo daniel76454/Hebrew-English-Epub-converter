@@ -6,7 +6,7 @@ Open: http://localhost:5000
 Requires: pip install flask ebooklib python-docx markdown2
 """
 
-import os, re, datetime, threading, uuid
+import os, re, datetime, threading, uuid, shutil, subprocess
 from pathlib import Path
 from flask import Flask, request, send_file, jsonify, render_template_string
 
@@ -338,6 +338,38 @@ def build_epub(data, meta, output_path):
     epub.write_epub(output_path, book, {})
 
 
+# ── MOBI conversion ──────────────────────────────────────────────────────────
+
+def find_ebook_convert():
+    path = shutil.which("ebook-convert")
+    if path:
+        return path
+    for candidate in [
+        "/Applications/calibre.app/Contents/MacOS/ebook-convert",
+        "/usr/bin/ebook-convert",
+        "/usr/local/bin/ebook-convert",
+    ]:
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+def convert_epub_to_mobi(epub_path, mobi_path):
+    converter = find_ebook_convert()
+    if not converter:
+        raise RuntimeError(
+            "Calibre's ebook-convert not found. "
+            "Install Calibre from https://calibre-ebook.com to enable MOBI output."
+        )
+    print(f"[mobi] Converting {epub_path} → {mobi_path}")
+    result = subprocess.run(
+        [converter, epub_path, mobi_path],
+        capture_output=True, text=True, timeout=120,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"ebook-convert failed:\n{result.stderr}")
+    print("[mobi] Conversion complete")
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.route("/")
@@ -359,9 +391,9 @@ def convert():
     uid = uuid.uuid4().hex
     src = UPLOAD_FOLDER / f"{uid}{ext}"
     out = UPLOAD_FOLDER / f"{uid}.epub"
+    mobi_out = UPLOAD_FOLDER / f"{uid}.mobi"
     f.save(str(src))
 
-    # Capture all print() output and return it with errors
     import io, contextlib
     log_buf = io.StringIO()
     try:
@@ -383,12 +415,24 @@ def convert():
         if not meta["title"]:
             meta["title"] = data["title"]
 
+        output_format = request.form.get("format", "epub").strip().lower()
+
         with contextlib.redirect_stdout(log_buf):
             build_epub(data, meta, str(out))
         src.unlink(missing_ok=True)
 
         stem = Path(f.filename).stem
-        print(log_buf.getvalue())  # also print to terminal
+
+        if output_format == "mobi":
+            with contextlib.redirect_stdout(log_buf):
+                convert_epub_to_mobi(str(out), str(mobi_out))
+            out.unlink(missing_ok=True)
+            print(log_buf.getvalue())
+            return send_file(str(mobi_out), as_attachment=True,
+                             download_name=f"{stem}.mobi",
+                             mimetype="application/x-mobipocket-ebook")
+
+        print(log_buf.getvalue())
         return send_file(str(out), as_attachment=True,
                          download_name=f"{stem}.epub",
                          mimetype="application/epub+zip")
@@ -398,6 +442,7 @@ def convert():
         print(log_buf.getvalue())
         src.unlink(missing_ok=True)
         out.unlink(missing_ok=True)
+        mobi_out.unlink(missing_ok=True)
         return jsonify({"error": str(e), "log": log_buf.getvalue()}), 500
 
 @app.route("/preview", methods=["POST"])
@@ -469,6 +514,11 @@ HTML = """<!DOCTYPE html>
   textarea{resize:vertical;min-height:72px;font-family:inherit}
   .full{grid-column:1/-1}
 
+  .format-toggle{display:flex;border-radius:8px;overflow:hidden;border:1px solid #2d3148;margin-bottom:1rem}
+  .format-toggle input[type="radio"]{position:absolute;opacity:0;pointer-events:none}
+  .format-toggle .fmt-label{flex:1;padding:.6rem 1rem;text-align:center;cursor:pointer;font-size:.875rem;font-weight:600;background:#151826;color:#64748b;transition:all .2s;user-select:none;margin:0;display:flex;align-items:center;justify-content:center;gap:.4rem}
+  .format-toggle input[type="radio"]:checked+.fmt-label{background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff}
+
   /* Button */
   button{display:flex;align-items:center;justify-content:center;gap:.5rem;width:100%;padding:.85rem;border:none;border-radius:10px;font-size:1rem;font-weight:600;cursor:pointer;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;transition:opacity .2s,transform .1s;margin-top:.25rem}
   button:hover{opacity:.9}
@@ -484,7 +534,7 @@ HTML = """<!DOCTYPE html>
 </head>
 <body>
 <h1>EPUB Converter</h1>
-<p class="subtitle">Convert DOCX · TXT · Markdown → EPUB</p>
+<p class="subtitle">Convert DOCX · TXT · Markdown → EPUB · MOBI</p>
 
 <div class="card">
   <h2>1 — Select File</h2>
@@ -520,6 +570,12 @@ HTML = """<!DOCTYPE html>
 
 <div class="card">
   <h2>3 — Convert</h2>
+  <label>Output Format</label>
+  <div class="format-toggle">
+    <input type="radio" id="fmt-epub" name="format" value="epub" checked><label class="fmt-label" for="fmt-epub">EPUB</label>
+    <input type="radio" id="fmt-mobi" name="format" value="mobi"><label class="fmt-label" for="fmt-mobi">MOBI</label>
+  </div>
+  <p id="mobi-note" style="display:none;font-size:.72rem;color:#64748b;margin:-.5rem 0 .75rem">MOBI conversion requires <a href="https://calibre-ebook.com" target="_blank" style="color:#818cf8;text-decoration:none">Calibre</a></p>
   <div id="log"></div>
   <button id="convert-btn" onclick="doConvert()" disabled>
     <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
@@ -539,6 +595,15 @@ const fileInput = document.getElementById('file-input');
 ['dragleave','drop'].forEach(e => dropzone.addEventListener(e, ev => { ev.preventDefault(); dropzone.classList.remove('over'); }));
 dropzone.addEventListener('drop', ev => setFile(ev.dataTransfer.files[0]));
 fileInput.addEventListener('change', () => setFile(fileInput.files[0]));
+
+document.querySelectorAll('input[name="format"]').forEach(r => r.addEventListener('change', () => {
+  const fmt = document.querySelector('input[name="format"]:checked').value;
+  document.getElementById('mobi-note').style.display = fmt === 'mobi' ? 'block' : 'none';
+  const btn = document.getElementById('convert-btn');
+  if (!btn.querySelector('.spinner')) {
+    btn.innerHTML = `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg> Convert & Download ${fmt.toUpperCase()}`;
+  }
+}));
 
 function setFile(f) {
   if (!f) return;
@@ -581,12 +646,14 @@ function log(msg, err=false) {
 async function doConvert() {
   if (!selectedFile) return;
   const btn = document.getElementById('convert-btn');
+  const fmt = document.querySelector('input[name="format"]:checked').value;
   btn.disabled = true;
   btn.innerHTML = '<div class="spinner"></div> Converting…';
   document.getElementById('log').innerHTML = '';
 
   const fd = new FormData();
   fd.append('file', selectedFile);
+  fd.append('format', fmt);
   ['title','author','language','publisher','date','subject','rights','description'].forEach(k => {
     fd.append(k, document.getElementById('m-'+k).value);
   });
@@ -602,12 +669,12 @@ async function doConvert() {
         d.log.split('\\n').forEach(function(l){ if(l.trim()) log(l); });
       }
     } else {
-      log('Parsing & building EPUB …');
+      log('Parsing & building ' + fmt.toUpperCase() + ' …');
       const blob = await res.blob();
       const url  = URL.createObjectURL(blob);
       const a    = document.createElement('a');
       const stem = selectedFile.name.replace(/\.[^.]+$/, '');
-      a.href = url; a.download = stem + '.epub'; a.click();
+      a.href = url; a.download = stem + '.' + fmt; a.click();
       URL.revokeObjectURL(url);
       log('Done! Download started ✓');
     }
@@ -616,7 +683,7 @@ async function doConvert() {
   }
 
   btn.disabled = false;
-  btn.innerHTML = `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg> Convert & Download EPUB`;
+  btn.innerHTML = `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg> Convert & Download ${fmt.toUpperCase()}`;
 }
 </script>
 </body>
